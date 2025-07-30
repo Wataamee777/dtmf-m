@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>DTMF → カタカナ逆変換</title>
+  <style>
+    body { font-family: sans-serif; padding: 2em; background: #f8f8f8; text-align: center; }
+    input, button { font-size: 1.2em; margin: 1em; }
+    #result { font-size: 1.4em; margin-top: 1.5em; }
+  </style>
+</head>
+<body>
+  <h1>🔁 DTMF音声 → カタカナ変換</h1>
+  <input type="file" accept="audio/wav" id="audioFile" /><br>
+  <button onclick="analyzeDTMF()">解析開始</button>
+  <div id="result">結果: ここに表示される</div>
+
+  <script>
+    const dtmfFreqs = {
+      "1": [697, 1209], "2": [697, 1336], "3": [697, 1477],
+      "4": [770, 1209], "5": [770, 1336], "6": [770, 1477],
+      "7": [852, 1209], "8": [852, 1336], "9": [852, 1477],
+      "*": [941, 1209], "0": [941, 1336], "#": [941, 1477]
+    };
+
+    const numberToKana = {
+      "11": "ア", "12": "イ", "13": "ウ", "14": "カ", "15": "キ", "16": "ク",
+      "17": "サ", "18": "シ", "19": "ス",
+      "21": "タ", "22": "チ", "23": "ツ", "24": "ナ", "25": "ニ", "26": "ヌ",
+      "27": "ハ", "28": "ヒ", "29": "フ",
+      "31": "マ", "32": "ミ", "33": "ム", "34": "ヤ", "35": "", "36": "ユ",
+      "37": "ラ", "38": "レ", "39": "",
+      "41": "メ", "42": "モ", "43": "゛", "44": "ワ", "45": "ー",
+      "46": "゜", "47": "ヲ", "48": "ン", "49": "小"
+    };
+
+    const tolerance = 20;
+
+    function matchTone(f1, f2) {
+      for (let k in dtmfFreqs) {
+        const [a, b] = dtmfFreqs[k];
+        if (
+          (Math.abs(a - f1) < tolerance && Math.abs(b - f2) < tolerance) ||
+          (Math.abs(b - f1) < tolerance && Math.abs(a - f2) < tolerance)
+        ) return k;
+      }
+      return "?";
+    }
+
+    async function analyzeDTMF() {
+      const file = document.getElementById('audioFile').files[0];
+      if (!file) return alert("音声ファイル選んで");
+
+      const arrayBuffer = await file.arrayBuffer();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const buffer = await ctx.decodeAudioData(arrayBuffer);
+
+      const channel = buffer.getChannelData(0);
+      const sampleRate = buffer.sampleRate;
+
+      const frameSize = Math.floor(0.1 * sampleRate); // 100ms
+      const detectedTones = [];
+
+      for (let i = 0; i < channel.length; i += frameSize) {
+        const frame = channel.slice(i, i + frameSize);
+        const fft = new Float32Array(frameSize);
+        for (let j = 0; j < frame.length; j++) {
+          fft[j] = frame[j] * Math.hammingWindow(j, frame.length); // 窓関数
+        }
+
+        const spectrum = getFFT(fft, sampleRate);
+        const peaks = findPeaks(spectrum, 2); // 上位2個
+
+        if (peaks.length === 2) {
+          const tone = matchTone(peaks[0].freq, peaks[1].freq);
+          if (tone !== "?") detectedTones.push(tone);
+        }
+      }
+
+      const pairs = [];
+      for (let i = 0; i < detectedTones.length - 1; i += 2) {
+        const pair = detectedTones[i] + detectedTones[i + 1];
+        pairs.push(pair);
+      }
+
+      const kana = pairs.map(p => numberToKana[p] || "？").join("");
+      document.getElementById("result").textContent = `結果: ${kana}（${pairs.join(" ")}）`;
+    }
+
+    // 簡易FFTピーク抽出
+    function getFFT(data, sampleRate) {
+      const len = data.length;
+      const spectrum = [];
+      for (let k = 1; k < len / 2; k++) {
+        let re = 0, im = 0;
+        for (let n = 0; n < len; n++) {
+          const phase = (2 * Math.PI * k * n) / len;
+          re += data[n] * Math.cos(phase);
+          im -= data[n] * Math.sin(phase);
+        }
+        const mag = Math.sqrt(re * re + im * im);
+        spectrum.push({ freq: k * sampleRate / len, mag });
+      }
+      return spectrum;
+    }
+
+    function findPeaks(spectrum, count) {
+      return spectrum.sort((a, b) => b.mag - a.mag).slice(0, count);
+    }
+
+    // 窓関数
+    Math.hammingWindow = (i, N) => 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (N - 1));
+  </script>
+</body>
+</html>
