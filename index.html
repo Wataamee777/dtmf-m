@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>DTMF変換＆WAV書き出し</title>
+<style>
+  body { font-family: sans-serif; padding: 2em; text-align: center; background: #f7f7f7; }
+  textarea { width: 90%; height: 80px; font-size: 1.2em; }
+  button, label { margin-top: 1em; padding: 10px 20px; font-size: 1em; }
+  #output { margin-top: 1em; font-size: 1.2em; }
+</style>
+</head>
+<body>
+
+<h1>文字→DTMF変換＆再生＆書き出し</h1>
+<textarea id="text" placeholder="例: アイウカン"></textarea><br>
+
+<label><input type="checkbox" id="randomInterval"> ランダム再生間隔にする</label><br>
+
+<button onclick="convertAndPlay()">DTMF再生</button>
+<button onclick="convertAndDownload()">WAVを書き出す</button>
+
+<div id="output"></div>
+
+<script>
+const dtmfMap = {
+  "ア": "11", "イ": "12", "ウ": "13", "か": "14", "カ": "14", "さ": "17", "サ": "17",
+  "タ": "21", "チ": "22", "ツ": "23", "ナ": "24", "ニ": "25", "ヌ": "26",
+  "ハ": "27", "ヒ": "28", "フ": "29", "マ": "31", "ミ": "32", "ム": "33",
+  "ヤ": "34", "ユ": "36", "ラ": "37", "レ": "38",
+  "メ": "41", "モ": "42", "ワ": "44", "ヲ": "47", "ン": "48",
+  "ー": "45", "゛": "43", "゜": "46", "小": "49"
+};
+
+const toneFrequencies = {
+  "1": [697, 1209], "2": [697, 1336], "3": [697, 1477],
+  "4": [770, 1209], "5": [770, 1336], "6": [770, 1477],
+  "7": [852, 1209], "8": [852, 1336], "9": [852, 1477],
+  "*": [941, 1209], "0": [941, 1336], "#": [941, 1477]
+};
+
+async function playTone(ctx, freq1, freq2, duration=150) {
+  const gain = ctx.createGain();
+  gain.gain.value = 0.2;
+  gain.connect(ctx.destination);
+
+  const osc1 = ctx.createOscillator();
+  const osc2 = ctx.createOscillator();
+
+  osc1.frequency.value = freq1;
+  osc2.frequency.value = freq2;
+
+  osc1.connect(gain);
+  osc2.connect(gain);
+
+  osc1.start();
+  osc2.start();
+
+  await new Promise(r => setTimeout(r, duration));
+
+  osc1.stop();
+  osc2.stop();
+}
+
+async function convertAndPlay() {
+  const text = document.getElementById("text").value;
+  const output = [];
+  for (const ch of text) {
+    const num = dtmfMap[ch];
+    if (num) output.push(num);
+  }
+  document.getElementById("output").textContent = `変換: ${output.join(" ")}`;
+
+  const randomInterval = document.getElementById("randomInterval").checked;
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  for (const pair of output) {
+    const [a, b] = pair.split("");
+    await playTone(ctx, toneFrequencies[a][0], toneFrequencies[a][1], 150);
+    await playTone(ctx, toneFrequencies[b][0], toneFrequencies[b][1], 150);
+    await new Promise(r => setTimeout(r, randomInterval ? 100 + Math.random() * 200 : 150));
+  }
+  ctx.close();
+}
+
+function createWav(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+
+  function writeString(view, offset, string) {
+    for(let i=0; i<string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  }
+
+  // RIFF header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(view, 8, 'WAVE');
+
+  // fmt chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true); // chunk size
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // channels
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+
+  // data chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+
+  // write samples
+  let offset = 44;
+  for(let i=0; i<samples.length; i++) {
+    let s = Math.max(-1, Math.min(1, samples[i]));
+    s = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    view.setInt16(offset, s, true);
+    offset += 2;
+  }
+
+  return buffer;
+}
+
+function generateToneSample(freq1, freq2, durationSec, sampleRate=44100) {
+  const length = sampleRate * durationSec;
+  const samples = new Float32Array(length);
+  for(let i=0; i<length; i++) {
+    const t = i / sampleRate;
+    samples[i] = 0.5 * (Math.sin(2 * Math.PI * freq1 * t) + Math.sin(2 * Math.PI * freq2 * t));
+  }
+  return samples;
+}
+
+async function convertAndDownload() {
+  const text = document.getElementById("text").value;
+  const output = [];
+  for (const ch of text) {
+    const num = dtmfMap[ch];
+    if (num) output.push(num);
+  }
+  if(output.length === 0) {
+    alert("変換できる文字がありません");
+    return;
+  }
+
+  const sampleRate = 44100;
+  let allSamples = new Float32Array(0);
+  const toneDuration = 0.15;
+  const silenceDuration = 0.05;
+  const silenceSamples = new Float32Array(sampleRate * silenceDuration);
+
+  // それぞれのDTMF数字ごとに音声生成して連結
+  for(const pair of output) {
+    for(const d of pair) {
+      const freqs = toneFrequencies[d];
+      const toneSamples = generateToneSample(freqs[0], freqs[1], toneDuration, sampleRate);
+      // concat allSamples + toneSamples + silenceSamples
+      const newSamples = new Float32Array(allSamples.length + toneSamples.length + silenceSamples.length);
+      newSamples.set(allSamples);
+      newSamples.set(toneSamples, allSamples.length);
+      newSamples.set(silenceSamples, allSamples.length + toneSamples.length);
+      allSamples = newSamples;
+    }
+  }
+
+  const wavBuffer = createWav(allSamples, sampleRate);
+  const blob = new Blob([wavBuffer], {type: "audio/wav"});
+  const url = URL.createObjectURL(blob);
+
+  // ダウンロードリンク作成
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "dtmf.wav";
+  a.textContent = "DTMF音声をダウンロード";
+  const outputDiv = document.getElementById("output");
+  outputDiv.appendChild(document.createElement("br"));
+  outputDiv.appendChild(a);
+}
+</script>
+
+</body>
+</html>
